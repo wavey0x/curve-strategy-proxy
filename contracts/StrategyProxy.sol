@@ -51,14 +51,11 @@ contract StrategyProxy {
     /// @notice Curve's CRV token address.
     address public constant crv = 0xD533a949740bb3306d119CC777fa900bA034cd52;
 
-    /// @notice Curve's 3CRV address (weekly fees paid in this token).
-    address public constant CRV3 = 0x6c3F90f043a72FA612cbac8115EE7e52BDe6E490;
-
-    /// @notice Recipient of weekly 3CRV admin fees. Default of yveCRV address.
-    address public feeRecipient = 0xc5bDdf9843308380375a611c18B50Fb9341f502A;
+    /// @notice Curve's crvUSD address (weekly fees paid in this token).
+    address public constant crvUSD = 0xf939E0A03FB07F59A73314E73794Be0E57ac1b4E;
 
     /// @notice Curve's fee distributor contract.
-    FeeDistribution public constant feeDistribution = FeeDistribution(0xA464e6DCda8AC41e03616F95f4BC98a13b8922Dc);
+    FeeDistribution public constant feeDistribution = FeeDistribution(0xA464e6DCda8AC41e03616F95f4BC98a13b8922Dc); // TODO Update this as needed
 
     /// @notice Curve's vote-escrowed Curve address.
     VeCRV public constant veCRV  = VeCRV(0x5f3b5DfEb7B28CDbD7FAba78963EE202a494e2A2);
@@ -84,18 +81,22 @@ contract StrategyProxy {
     /// @notice Check if an address is an approved locker of CRV tokens.
     mapping(address => bool) public lockers;
 
+    /// @notice Check if an address is an approved admin fee claimer.
+    mapping(address => bool) public adminFeeClaimers;
+
     /// @notice Current governance address.
     address public governance;
 
-    /// @notice Curve vault factory address. 
-    address public factory;
+    /// @notice Check if an address is an approved factory for deploying Curve voter strategies.
+    mapping(address => bool) public approvedFactories;
 
     /// @notice This voter's last time cursor, updated on each claim of admin fees.
     uint256 public lastTimeCursor;
 
     // Events so that indexers can keep track of key actions
     event GovernanceSet(address indexed governance);
-    event FeeRecipientSet(address indexed feeRecipient);
+    event adminFeeClaimerRevoked(address indexed feeRecipient);
+    event adminFeeClaimerApproved(address indexed feeRecipient);
     event StrategyApproved(address indexed gauge, address indexed strategy);
     event StrategyRevoked(address indexed gauge, address indexed strategy);
     event VoterApproved(address indexed voter);
@@ -105,7 +106,7 @@ contract StrategyProxy {
     event ExtraTokenRecipientApproved(address indexed token, address indexed recipient);
     event ExtraTokenRecipientRevoked(address indexed token, address indexed recipient);
     event RewardTokenApproved(address indexed token, bool approved);
-    event FactorySet(address indexed factory);
+    event FactorySet(address indexed factory, bool indexed approved);
     event TokenClaimed(address indexed token, address indexed recipient, uint balance);
 
     constructor() public {
@@ -115,11 +116,10 @@ contract StrategyProxy {
     /// @notice Set curve vault factory address.
     /// @dev Must be called by governance.
     /// @param _factory Address to set as curve vault factory.
-    function setFactory(address _factory) external {
+    function setFactory(address _factory, bool _allowed) external {
         require(msg.sender == governance, "!governance");
-        require(_factory != factory, "already set");
-        factory = _factory;
-        emit FactorySet(_factory);
+        approvedFactories[_factory] = _allowed;
+        emit FactorySet(_factory, _allowed);
     }
     
     /// @notice Set governance address.
@@ -132,16 +132,26 @@ contract StrategyProxy {
         emit GovernanceSet(_governance);
     }
 
-    /// @notice Set recipient of weekly 3CRV admin fees.
+    /// @notice Set recipient of weekly crvUSD admin fees.
     /// @dev Only a single address can be approved at any time.
     ///  Must be called by governance.
     /// @param _feeRecipient Address to approve for fees.
-    function setFeeRecipient(address _feeRecipient) external {
+    function approveFeeClaimer(address _feeClaimer) external {
         require(msg.sender == governance, "!governance");
-        require(_feeRecipient != address(0), "!zeroaddress");
-        require(_feeRecipient != feeRecipient, "already set");
-        feeRecipient = _feeRecipient;
-        emit FeeRecipientSet(_feeRecipient);
+        require(!adminFeeClaimers[_feeClaimer], "already approved");
+        adminFeeClaimers[_feeClaimer] = true;
+        emit adminFeeClaimerApproved(_feeRecipient);
+    }
+
+    /// @notice Set recipient of weekly crvUSD admin fees.
+    /// @dev Only a single address can be approved at any time.
+    ///  Must be called by governance.
+    /// @param _feeRecipient Address to approve for fees.
+    function revokeFeeClaimer(address _feeClaimer) external {
+        require(msg.sender == governance, "!governance");
+        require(adminFeeClaimers[_feeClaimer], "already revoked");
+        adminFeeClaimers[_feeClaimer] = false;
+        emit adminFeeClaimerRevoked(_feeRecipient);
     }
 
     /// @notice Add strategy to a gauge.
@@ -149,9 +159,10 @@ contract StrategyProxy {
     /// @param _gauge Gauge to permit strategy on.
     /// @param _strategy Strategy to approve on gauge.
     function approveStrategy(address _gauge, address _strategy) external {
-        require(msg.sender == governance || msg.sender == factory, "!access");
+        require(msg.sender == governance || approvedFactories[msg.sender], "!access");
         require(_strategy != address(0), "disallow zero");
         require(strategies[_gauge] != _strategy, "already approved");
+        proxy.safeExecute(_gauge, 0, abi.encodeWithSignature("set_rewards_receiver(address)", _strategy));
         strategies[_gauge] = _strategy;
         emit StrategyApproved(_gauge, _strategy);
     }
@@ -163,6 +174,7 @@ contract StrategyProxy {
         require(msg.sender == governance, "!governance");
         address _strategy = strategies[_gauge];
         require(_strategy != address(0), "already revoked");
+        proxy.safeExecute(_gauge, 0, abi.encodeWithSignature("set_rewards_receiver(address)", address(0)));
         strategies[_gauge] = address(0);
         emit StrategyRevoked(_gauge, _strategy);
     }
@@ -368,18 +380,18 @@ contract StrategyProxy {
 
     /// @notice Claim share of weekly admin fees from Curve fee distributor.
     /// @dev Admin fees become available every Thursday, so we run this expensive
-    ///  logic only once per week. May only be called by feeRecipient.
-    /// @param _recipient The address to which we transfer 3CRV.
+    ///  logic only once per week. May only be called by approved callers.
+    /// @param _recipient The address to which we transfer crvUSD.
     function claim(address _recipient) external returns (uint amount){
-        require(msg.sender == feeRecipient, "!approved");
+        require(adminFeeClaimers[msg.sender], "!approved");
         if (!claimable()) return 0;
         address p = address(proxy);
         feeDistribution.claim_many([p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p]);
         lastTimeCursor = feeDistribution.time_cursor_of(address(proxy));
 
-        amount = IERC20(CRV3).balanceOf(address(proxy));
+        amount = IERC20(crvUSD).balanceOf(address(proxy));
         if (amount > 0) {
-            proxy.safeExecute(CRV3, 0, abi.encodeWithSignature("transfer(address,uint256)", _recipient, amount));
+            proxy.safeExecute(crvUSD, 0, abi.encodeWithSignature("transfer(address,uint256)", _recipient, amount));
         }
     }
 
@@ -421,10 +433,7 @@ contract StrategyProxy {
     /// @param _gauge The gauge which this strategy is claiming rewards.
     /// @param _token The token to be claimed to the approved strategy.
     function claimRewards(address _gauge, address _token) external {
-        require(strategies[_gauge] == msg.sender, "!strategy");
-        require(rewardTokenApproved[_token], "!approvedToken");
-        Gauge(_gauge).claim_rewards(address(proxy));
-        _transferBalance(_token);
+        _claimRewards(_gauge);
     }
 
     /// @notice Claim non-CRV token incentives from the gauge and transfer to strategy.
@@ -432,12 +441,14 @@ contract StrategyProxy {
     /// @param _gauge The gauge which this strategy is claiming rewards.
     /// @param _tokens The token(s) to be claimed to the approved strategy.
     function claimManyRewards(address _gauge, address[] memory _tokens) external {
+        _claimRewards(_gauge);
+    }
+    
+    // use this internal function to eliminate the need for transfers when claiming extra rewards
+    function _claimRewards(address _gauge) internal {
         require(strategies[_gauge] == msg.sender, "!strategy");
+        require(Gauge(_gauge).rewards_receiver(address(proxy)) == msg.sender);
         Gauge(_gauge).claim_rewards(address(proxy));
-        for (uint256 i; i < _tokens.length; ++i) {
-            require(rewardTokenApproved[_tokens[i]], "!approvedToken");
-            _transferBalance(_tokens[i]);
-        }
     }
 
     /// @notice Approve reward tokens to be claimed by strategies.
@@ -463,7 +474,7 @@ contract StrategyProxy {
 
     // make sure a strategy can't yoink gauge or LP tokens.
     function _isSafeToken(address _token) internal view returns (bool) {
-        if (_token == crv) return false;
+        if (_token == crv || _token == crvUSD) return false;
         try gaugeController.gauge_types(_token) {
             return false;
         }
@@ -471,9 +482,5 @@ contract StrategyProxy {
         address pool = metaRegistry.get_pool_from_lp_token(_token);
         if (pool != address(0)) return false;
         return true;
-    }
-
-    function _transferBalance(address _token) internal {
-        proxy.safeExecute(_token, 0, abi.encodeWithSignature("transfer(address,uint256)", msg.sender, IERC20(_token).balanceOf(address(proxy))));
     }
 }
