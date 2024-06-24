@@ -300,25 +300,24 @@ contract StrategyProxy {
 
     /// @notice Claim share of weekly admin fees from Curve fee distributor.
     /// @dev Admin fees become available every Thursday at 00:00 UTC
-    function claimAdminFees() external returns (uint amount) {
+    function claimAdminFees() external returns (uint) {
         require(msg.sender == adminFeeRecipient, "!authorized");
-        amount = _claimAdminFees();
-        _transferBalance(crvUSD, adminFeeRecipient);
+        _claimAdminFees();
+        return _transferBalance(crvUSD, adminFeeRecipient);
     }
 
     /// @notice Allow governance to claim weekly admin fees from Curve fee distributor.
-    function forceClaimAdminFees(address _recipient) external returns (uint amount) {
+    function forceClaimAdminFees(address _recipient) external returns (uint) {
         require(msg.sender == governance, "!governance");
-        amount = _claimAdminFees();
-        _transferBalance(crvUSD, _recipient);
+        _claimAdminFees();
+        return _transferBalance(crvUSD, _recipient);
     }
 
-    function _claimAdminFees() internal returns (uint amount) {
+    function _claimAdminFees() internal {
         if (canClaim()) {
             address p = address(proxy);
             feeDistribution.claim_many([p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p]);
         }
-        return crvUSD.balanceOf(address(proxy));
     }
 
     /// @notice Cast a DAO vote
@@ -393,7 +392,7 @@ contract StrategyProxy {
         return true;
     }
 
-    function _legacyClaimRewards(address _gauge, address[] memory _tokens) internal returns (bool) {
+    function _legacyClaimRewards(address _gauge, address[] memory _tokens) internal {
         for (uint256 i; i < _tokens.length; ++i) {
             require(rewardTokenApproved[_tokens[i]], "!approvedToken");
             _transferBalance(IERC20(_tokens[i]), msg.sender);
