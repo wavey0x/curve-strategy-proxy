@@ -99,11 +99,12 @@ contract StrategyProxy {
     event LockerApprovalSet(address indexed locker, bool indexed approved);
     event ExtraTokenRecipientApproved(address indexed token, address indexed recipient);
     event ExtraTokenRecipientRevoked(address indexed token, address indexed recipient);
-    event RewardTokenApproved(address indexed token, bool approved);
+    event RewardTokenApprovalSet(address indexed token, bool approved);
     event FactorySet(address indexed factory, bool indexed approved);
     event TokenClaimed(address indexed token, address indexed recipient, uint balance);
 
     constructor(address _adminFeeRecipient) {
+        require(_adminFeeRecipient != address(0), "Empty admin fee recipient");
         governance = msg.sender;
         adminFeeRecipient = _adminFeeRecipient;
     }
@@ -145,7 +146,8 @@ contract StrategyProxy {
         require(msg.sender == governance || approvedFactories[msg.sender], "!access");
         require(_strategy != address(0), "disallow zero");
         require(strategies[_gauge] != _strategy, "already approved");
-        proxy.safeExecute(_gauge, 0, abi.encodeWithSignature("set_rewards_receiver(address)", _strategy));
+        // @dev The following call should fail gracefully on older gauges that don't implement this interface.
+        proxy.execute(_gauge, 0, abi.encodeWithSignature("set_rewards_receiver(address)", _strategy));
         strategies[_gauge] = _strategy;
         emit StrategyApproved(_gauge, _strategy);
     }
@@ -157,7 +159,8 @@ contract StrategyProxy {
         require(msg.sender == governance, "!governance");
         address _strategy = strategies[_gauge];
         require(_strategy != address(0), "already revoked");
-        proxy.safeExecute(_gauge, 0, abi.encodeWithSignature("set_rewards_receiver(address)", address(0)));
+        // @dev The following call should fail gracefully on older gauges that don't implement this interface.
+        proxy.execute(_gauge, 0, abi.encodeWithSignature("set_rewards_receiver(address)", address(0)));
         strategies[_gauge] = address(0);
         emit StrategyRevoked(_gauge, _strategy);
     }
@@ -348,9 +351,7 @@ contract StrategyProxy {
         _transferAdminFees(adminFeeRecipient, amount);
     }
 
-    /// @notice Claim share of weekly admin fees from Curve fee distributor.
-    /// @dev Admin fees become available every Thursday, so we run this expensive
-    ///  logic only once per week. May only be called by feeRecipient.
+    /// @notice Allow governance to claim weekly admin fees from Curve fee distributor.
     function forceClaimAdminFees(address _recipient) external returns (uint amount) {
         require(msg.sender == governance, "!governance");
         amount = _claimAdminFees();
@@ -410,16 +411,16 @@ contract StrategyProxy {
     }
 
     /// @notice Claim non-CRV token incentives from the gauge and transfer to strategy.
-    /// @dev Reward tokens must first be approved via approveRewardToken() before claiming.
-    ///  Must be called by the strategy approved for the given gauge.
+    /// @dev    There are two claim methods:
+    ///         - new (preferred): strategy is set as the recipient in the gauge contract. Rewards are fwd'd directly to strategy.
+    ///         - legacy: fallback method for old gauges that do not support `rewards_receiver` interface. In this case, reward tokens are sent to voter and then swept to strategy.
     /// @param _gauge The gauge which this strategy is claiming rewards.
     /// @param _token The token to be claimed to the approved strategy.
     function claimRewards(address _gauge, address _token) external {
-        bool success = _claimRewards(_gauge);
-        if (success) return;
+        if (_claimRewards(_gauge)) return;
         address[] memory tokens = new address[](1);
         tokens[0] = _token;
-        if (!success) _legacyClaimRewards(_gauge, tokens);
+        _legacyClaimRewards(_gauge, tokens);
     }
 
     /// @notice Claim non-CRV token incentives from the gauge and transfer to strategy.
@@ -427,23 +428,15 @@ contract StrategyProxy {
     /// @param _gauge The gauge which this strategy is claiming rewards.
     /// @param _tokens The token(s) to be claimed to the approved strategy.
     function claimManyRewards(address _gauge, address[] memory _tokens) external {
-        bool success = _claimRewards(_gauge);
-        if (success) return;
+        if (_claimRewards(_gauge)) return;
         _legacyClaimRewards(_gauge, _tokens);
-    }
-
-    function _legacyClaimRewards(address _gauge, address[] memory _tokens) internal returns (bool) {
-        for (uint256 i; i < _tokens.length; ++i) {
-            require(rewardTokenApproved[_tokens[i]], "!approvedToken");
-            _transferBalance(_tokens[i]);
-        }
     }
     
     // use this internal function to eliminate the need for transfers when claiming extra rewards
     function _claimRewards(address _gauge) internal returns (bool) {
         require(strategies[_gauge] == msg.sender, "!strategy");
         try Gauge(_gauge).rewards_receiver(address(proxy)) returns (address receiver) {
-            require(receiver == msg.sender, "strategy not reward receiver");
+            require(receiver == msg.sender, "strategy not reward receiver"); // Reverts txn if fails.
         }
         catch {
             return false;
@@ -452,25 +445,22 @@ contract StrategyProxy {
         return true;
     }
 
+    function _legacyClaimRewards(address _gauge, address[] memory _tokens) internal returns (bool) {
+        for (uint256 i; i < _tokens.length; ++i) {
+            require(rewardTokenApproved[_tokens[i]], "!approvedToken");
+            _transferBalance(_tokens[i]);
+        }
+    }
+
     /// @notice Approve reward tokens to be claimed by strategies.
     /// @dev Must be called by governance.
     /// @param _token The token to be claimed.
-    function approveRewardToken(address _token) external {
+    function approveRewardToken(address _token, bool _approved) external {
         require(msg.sender == governance, "!governance");
-        require(_isSafeToken(_token),"!safeToken");
-        require(!rewardTokenApproved[_token]);
-        rewardTokenApproved[_token] = true;
-        emit RewardTokenApproved(_token, true);
-    }
-
-    /// @notice Revoke approval of reward tokens to be claimed by strategies.
-    /// @dev Must be called by governance.
-    /// @param _token The token to be revoked.
-    function revokeRewardToken(address _token) external {
-        require(msg.sender == governance, "!governance");
-        require(rewardTokenApproved[_token]);
-        rewardTokenApproved[_token] = false;
-        emit RewardTokenApproved(_token, false);
+        if (_approved) require(_isSafeToken(_token),"!safeToken");
+        require(rewardTokenApproved[_token] != _approved, "No approval change");
+        rewardTokenApproved[_token] = _approved;
+        emit RewardTokenApprovalSet(_token, _approved);
     }
 
     // make sure a strategy can't yoink gauge or LP tokens.

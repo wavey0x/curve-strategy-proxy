@@ -1,6 +1,56 @@
 import math, time, brownie
 from brownie import Contract, web3, StrategyProxy, ZERO_ADDRESS, chain
 
+DAY = 60 * 60 * 24
+WEEK = DAY * 7
+FOUR_YEARS = 365 * 60 * 60 * 24 * 4
+
+def test_reward_token(
+    new_proxy, user, some_token, gauge_new, gauge_legacy, dev, gov, 
+    strategy_new, strategy_legacy, voter
+):
+    # Build some rewards
+    chain.sleep(DAY)
+    chain.mine()
+
+    # Test Access Control
+    with brownie.reverts('!strategy'):
+        tx = new_proxy.claimRewards(gauge_new, some_token, {'from': dev})
+
+    with brownie.reverts('!strategy'): 
+        tx = new_proxy.claimManyRewards(gauge_new, [some_token], {'from': dev})
+
+    # Ensure reward token claim goes direct to strategy
+    reward_data = gauge_new.reward_data(some_token)
+    tx = new_proxy.claimManyRewards(gauge_new, [some_token], {'from': strategy_new})
+    assert len(tx.events['Transfer']) == 1
+    transfer = tx.events['Transfer'][0]
+    assert transfer.address == some_token.address
+    assert transfer['value'] > 0
+    assert transfer['to'] == strategy_new.address
+    
+    # Build some rewards
+    chain.sleep(DAY)
+    chain.mine()
+
+    tx = new_proxy.revokeStrategy(strategy_new.gauge(),{'from':gov})
+    with brownie.reverts('!strategy'):
+        tx = new_proxy.claimManyRewards(gauge_new, [some_token], {'from': strategy_new})
+
+    strategy_legacy
+    assert False
+
+
+    # new_proxy.claim({'from':strategy})
+
+    # new_gauge = 
+
+    # legacy_gauge = 
+
+    # gauge.add_rewards()
+
+    # make sure if gauge isnt added as receiver it fails.
+
 
 def test_proxy_dao_vote(voter, new_proxy, gov, user):
     VOTING_CONTRACTS = {
@@ -8,9 +58,9 @@ def test_proxy_dao_vote(voter, new_proxy, gov, user):
         "param": "0xBCfF8B0b9419b9A88c44546519b1e909cF330399",
     }
     target = Contract(VOTING_CONTRACTS['dao'])
-    vote_id = 619
+    vote_id = target.votesLength() - 1
     amigos = '0x4444AAAACDBa5580282365e25b16309Bd770ce4a'
-    new_proxy.approveVoter(amigos, {'from': gov})
+    new_proxy.approveVoter(amigos, True, {'from': gov})
     
     assert target.canVote(vote_id, voter)
 
@@ -44,16 +94,17 @@ def test_proxy(
     accounts, 
     voter, 
     new_proxy, 
-    fee_distributor, 
-    crv3, 
+    fee_distributor,
     chain, 
-    whale_3crv, 
-    gov
+    whale_crvusd, 
+    gov,
+    crvusd,
+    user,
+    dev,
 ):
-    WEEK = 60 * 60 * 24 * 7
-    max = chain.time() + (365 * 60 * 60 * 24 * 4)
+    max = chain.time() + FOUR_YEARS
     locker = accounts[2]
-    new_proxy.approveLocker(locker,{'from':gov})
+    new_proxy.approveLocker(locker, True, {'from':gov})
     vecrv = Contract(new_proxy.veCRV())
     lock_end = vecrv.locked__end(voter)
 
@@ -70,7 +121,7 @@ def test_proxy(
     assert vecrv.locked__end(voter) > lock_end
 
     chain.undo(1)
-    new_proxy.revokeLocker(locker,{'from':gov})
+    new_proxy.approveLocker(locker, False, {'from':gov})
     with brownie.reverts():
         new_proxy.maxLock({'from':locker})
 
@@ -85,23 +136,43 @@ def test_proxy(
         new_proxy.vote(gauge,0, {'from':voter})
     
     voter_user = locker
-    tx = new_proxy.approveVoter(voter_user,{'from':gov})
-    assert tx.events['VoterApproved']['voter'] == voter_user
+    tx = new_proxy.approveVoter(voter_user, True, {'from':gov})
+    e = tx.events['VoterApprovalSet']
+    assert e['voter'] == voter_user
+    assert e['approved'] == True
     new_proxy.vote(gauge,0, {'from':voter_user})
     
-    tx = new_proxy.revokeVoter(voter_user,{'from':gov})
-    assert tx.events['VoterRevoked']['voter'] == voter_user
+    tx = new_proxy.approveVoter(voter_user, False, {'from':gov})
+    e = tx.events['VoterApprovalSet']
+    assert e['voter'] == voter_user
+    assert e['approved'] == False
 
     with brownie.reverts():
         new_proxy.vote(gauge,0, {'from':voter_user})
 
-    crv3.transfer(fee_distributor, 100_000e18, {'from':whale_3crv})
+def test_admin_fees(accounts, crvusd, fee_distributor, whale_crvusd, voter, new_proxy, dev, gov):
+    admin = accounts.at(fee_distributor.admin(),force=True)
+    crvusd.transfer(fee_distributor, 100_000e18, {'from':whale_crvusd})
+    fee_distributor.checkpoint_token({'from':admin})
     chain.sleep(WEEK)
     chain.mine()
-    y = accounts.at(new_proxy.feeRecipient(),force=True)
-    admin = accounts.at(fee_distributor.admin(),force=True)
+    admin_fee_recipient = accounts.at(new_proxy.adminFeeRecipient(),force=True)
     fee_distributor.checkpoint_token({'from':admin})
-    tx = new_proxy.claim(new_proxy,{'from':y})
+    
+    # Claim Admin Fees
+    before = crvusd.balanceOf(admin_fee_recipient) 
+    crvusd.transfer(voter, 100e18, {'from':whale_crvusd})
+    tx = new_proxy.claimAdminFees({'from':admin_fee_recipient})
+    amt_received = tx.return_value
+    after = crvusd.balanceOf(admin_fee_recipient)
+    assert crvusd.balanceOf(voter) == 0
+    assert amt_received > 0
+    assert after - before == amt_received
+
+    # Force Claim Admin Fees
+    assert crvusd.balanceOf(dev) == 0
+    tx = new_proxy.forceClaimAdminFees(dev, {'from':gov})
+    assert crvusd.balanceOf(dev) == tx.return_value
 
 def test_approve_adapter(accounts, voter, new_proxy, gov):
     # LP tokens are blocked
@@ -172,7 +243,7 @@ def test_approve_adapter(accounts, voter, new_proxy, gov):
     WEEK = 60 * 60 * 24 * 7
     locker = accounts[2]
     new_proxy = Contract.from_abi('',new_proxy.address,new_proxy.abi,owner=gov)
-    new_proxy.approveLocker(locker)
+    new_proxy.approveLocker(locker, True)
     vecrv = Contract(new_proxy.veCRV())
     lock_end = vecrv.locked__end(voter)
     for key in TEST_CASES:
@@ -184,10 +255,10 @@ def test_approve_adapter(accounts, voter, new_proxy, gov):
             with brownie.reverts():
                 tx = new_proxy.approveExtraTokenRecipient(key, recipient)
             with brownie.reverts():
-                tx = new_proxy.approveRewardToken(key)
+                tx = new_proxy.approveRewardToken(key, True)
         else:
             tx = new_proxy.approveExtraTokenRecipient(key, recipient)
-            tx = new_proxy.approveRewardToken(key)
+            tx = new_proxy.approveRewardToken(key, True)
             assert new_proxy.rewardTokenApproved(key) == True
         print(f'Gas used {tx.gas_used:_}')
         # if tx.gas_used > 1_000_000:
@@ -195,14 +266,4 @@ def test_approve_adapter(accounts, voter, new_proxy, gov):
         if new_proxy.extraTokenRecipient(key) != ZERO_ADDRESS:
             tx = new_proxy.revokeExtraTokenRecipient(key)
         if new_proxy.rewardTokenApproved(key):
-            tx = new_proxy.revokeRewardToken(key)
-
-def test_exact_deposit(strategy_3crv, whale_3crv, gov, crv3, new_proxy, voter):
-    new_proxy.approveStrategy(strategy_3crv.gauge(),strategy_3crv,{'from':gov})
-    crv3.transfer(voter, 100_000e18, {'from':whale_3crv})
-
-    start_amt = strategy_3crv.estimatedTotalAssets() / 1e18
-    strategy_3crv.harvest({'from':strategy_3crv.keeper()})
-    end_amt = strategy_3crv.estimatedTotalAssets() / 1e18
-
-    assert False
+            tx = new_proxy.approveRewardToken(key, False) # Revoke
