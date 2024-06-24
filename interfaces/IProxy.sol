@@ -10,3 +10,15 @@ interface IProxy {
 
     function increaseAmount(uint256) external;
 }
+
+library SafeProxy {
+    function safeExecute(
+        IProxy proxy,
+        address to,
+        uint256 value,
+        bytes memory data
+    ) internal {
+        (bool success, ) = proxy.execute(to, value, data);
+        require(success);
+    }
+}
