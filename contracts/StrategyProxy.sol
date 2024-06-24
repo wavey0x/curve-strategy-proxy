@@ -213,7 +213,7 @@ contract StrategyProxy {
     /// @dev Must be called by governance or voter.
     /// @param _gauges List of gauges to vote on.
     /// @param _weights List of weight to vote with.
-    function vote_many(address[] calldata _gauges, uint256[] calldata _weights) external {
+    function voteMany(address[] calldata _gauges, uint256[] calldata _weights) external {
         require(msg.sender == governance || voters[msg.sender], "!voter");
         require(_gauges.length == _weights.length, "!mismatch");
         for(uint256 i = 0; i < _gauges.length; i++) {
