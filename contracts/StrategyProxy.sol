@@ -72,9 +72,6 @@ contract StrategyProxy {
     /// @notice Check if a gauge reward token is approved for claiming.
     mapping(address => bool) public rewardTokenApproved;
 
-    /// @notice Look up the recipient approved for a given extra token (typically from bribes).
-    mapping(address => address) public extraTokenRecipient;
-
     /// @notice Check if an address is an approved voter for gauge weights.
     mapping(address => bool) public voters;
 
@@ -97,8 +94,6 @@ contract StrategyProxy {
     event StrategyRevoked(address indexed gauge, address indexed strategy);
     event VoterApprovalSet(address indexed voter, bool indexed approved);
     event LockerApprovalSet(address indexed locker, bool indexed approved);
-    event ExtraTokenRecipientApproved(address indexed token, address indexed recipient);
-    event ExtraTokenRecipientRevoked(address indexed token, address indexed recipient);
     event RewardTokenApprovalSet(address indexed token, bool approved);
     event FactorySet(address indexed factory, bool indexed approved);
     event TokenClaimed(address indexed token, address indexed recipient, uint balance);
@@ -163,46 +158,6 @@ contract StrategyProxy {
         proxy.execute(_gauge, 0, abi.encodeWithSignature("set_rewards_receiver(address)", address(0)));
         strategies[_gauge] = address(0);
         emit StrategyRevoked(_gauge, _strategy);
-    }
-
-    /// @notice Use to approve a recipient. Typically only to be used on older gauge codebases as newer code allows
-    ///         for Recipients have privileges to claim tokens directly from the voter.
-    /// @dev For safety: Recipients cannot be added for LP tokens or gauge tokens (approved via gauge controller).
-    ///  Must be called by governance.
-    /// @param _token Token to permit a recpient for.
-    /// @param _recipient Recipient to approve for token.
-    function approveExtraTokenRecipient(address _token, address _recipient) external {
-        require(msg.sender == governance, "!governance");
-        require(_recipient != address(0), "disallow zero");
-        require(extraTokenRecipient[_token] != _recipient, "already approved");
-        require(_isSafeToken(_token), "!safeToken");
-        extraTokenRecipient[_token] = _recipient;
-        emit ExtraTokenRecipientApproved(_token, _recipient);
-    }
-
-    /// @notice Clear any previously approved token recipient.
-    /// @dev Must be called by governance.
-    /// @param _token Token from which to clearn recipient.
-    function revokeExtraTokenRecipient(address _token) external {
-        require(msg.sender == governance, "!governance");
-        address recipient = extraTokenRecipient[_token];
-        require(recipient != address(0), "already revoked");
-        extraTokenRecipient[_token] = address(0);
-        emit ExtraTokenRecipientRevoked(_token, recipient);
-    }
-
-    /// @notice Claim extra tokens sitting in the voter.
-    /// @dev Must be called by an approved recipient. See approveExtraTokenRecipient()
-    ///  for more info.
-    /// @param _token Token to claim.
-    function claimExtraToken(address _token) external {
-        address recipient = extraTokenRecipient[_token];
-        require(msg.sender == recipient);
-        uint256 _balance = IERC20(_token).balanceOf(address(proxy));
-        if (_balance > 0) {
-            proxy.safeExecute(_token, 0, abi.encodeWithSignature("transfer(address,uint256)", recipient, _balance));
-            emit TokenClaimed(_token, recipient, _balance);
-        }
     }
 
     /// @notice Approve an address for voting on gauge weights.
@@ -348,14 +303,14 @@ contract StrategyProxy {
     function claimAdminFees() external returns (uint amount) {
         require(msg.sender == adminFeeRecipient, "!authorized");
         amount = _claimAdminFees();
-        _transferAdminFees(adminFeeRecipient, amount);
+        _transferBalance(crvUSD, adminFeeRecipient);
     }
 
     /// @notice Allow governance to claim weekly admin fees from Curve fee distributor.
     function forceClaimAdminFees(address _recipient) external returns (uint amount) {
         require(msg.sender == governance, "!governance");
         amount = _claimAdminFees();
-        _transferAdminFees(_recipient, amount);
+        _transferBalance(crvUSD, _recipient);
     }
 
     function _claimAdminFees() internal returns (uint amount) {
@@ -364,13 +319,6 @@ contract StrategyProxy {
             feeDistribution.claim_many([p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p]);
         }
         return crvUSD.balanceOf(address(proxy));
-    }
-
-    function _transferAdminFees(address _recipient, uint _amount) internal returns (uint) {
-        if (_amount > 0) {
-            proxy.safeExecute(address(crvUSD), 0, abi.encodeWithSignature("transfer(address,uint256)", _recipient, _amount));
-        }
-        return _amount;
     }
 
     /// @notice Cast a DAO vote
@@ -448,7 +396,7 @@ contract StrategyProxy {
     function _legacyClaimRewards(address _gauge, address[] memory _tokens) internal returns (bool) {
         for (uint256 i; i < _tokens.length; ++i) {
             require(rewardTokenApproved[_tokens[i]], "!approvedToken");
-            _transferBalance(_tokens[i]);
+            _transferBalance(IERC20(_tokens[i]), msg.sender);
         }
     }
 
@@ -475,7 +423,10 @@ contract StrategyProxy {
         return true;
     }
 
-    function _transferBalance(address _token) internal {
-        proxy.safeExecute(_token, 0, abi.encodeWithSignature("transfer(address,uint256)", msg.sender, IERC20(_token).balanceOf(address(proxy))));
+    function _transferBalance(IERC20 _token, address _recipient) internal returns (uint) {
+        uint balance = _token.balanceOf(address(proxy));
+        if (balance == 0) return 0;
+        proxy.safeExecute(address(_token), 0, abi.encodeWithSignature("transfer(address,uint256)", _recipient, balance));
+        return balance;
     }
 }
