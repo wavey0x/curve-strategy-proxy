@@ -272,20 +272,6 @@ contract StrategyProxy {
         proxy.safeExecute(_gauge, 0, abi.encodeWithSignature("deposit(uint256)", _balance));
     }
 
-    /// @notice Takes care of depositing Curve LPs into gauge.
-    /// @dev Strategy must first transfer LPs to this contract prior to calling.
-    ///  Must be called by strategy approved for this gauge.
-    /// @param _gauge The gauge to deposit LP token into.
-    /// @param _token The LP token to deposit into gauge.
-    function depositExact(address _gauge, address _token, uint _amount) external {
-        require(strategies[_gauge] == msg.sender, "!strategy");
-        IERC20(_token).safeTransfer(address(proxy), _amount);
-
-        proxy.safeExecute(_token, 0, abi.encodeWithSignature("approve(address,uint256)", _gauge, 0));
-        proxy.safeExecute(_token, 0, abi.encodeWithSignature("approve(address,uint256)", _gauge, _amount));
-        proxy.safeExecute(_gauge, 0, abi.encodeWithSignature("deposit(uint256)", _amount));
-    }
-
     /// @notice Abstracts the CRV minting and transfers to an approved strategy with CRV earnings.
     /// @dev Designed to be called within the harvest function of a strategy.
     /// @param _gauge The gauge which this strategy is claiming CRV from.
