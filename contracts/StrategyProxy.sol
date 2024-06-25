@@ -192,7 +192,7 @@ contract StrategyProxy {
     function voteMany(address[] calldata _gauges, uint256[] calldata _weights) external {
         require(msg.sender == governance || voters[msg.sender], "!voter");
         require(_gauges.length == _weights.length, "!mismatch");
-        for(uint256 i = 0; i < _gauges.length; i++) {
+        for (uint256 i = 0; i < _gauges.length; i++) {
             _vote(_gauges[i], _weights[i]);
         }
     }
@@ -276,9 +276,11 @@ contract StrategyProxy {
         if (!canClaim()) return 0;
         address p = address(proxy);
         uint startBalance = crvUSD.balanceOf(p);
-        
-        feeDistribution.claim(p);
-        while (crvUSD.balanceOf(p) <= startBalance) feeDistribution.claim(p);
+
+        for (uint i; i < 10; i++) { // @dev max 10 tries is up to 500 weeks of history.
+            feeDistribution.claim(p);
+            if (crvUSD.balanceOf(p) > startBalance) break;
+        }
         return _transferBalance(crvUSD, _recipient);
     }
 
