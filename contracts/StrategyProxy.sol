@@ -103,6 +103,7 @@ contract StrategyProxy {
     /// @param _recipient Address to approve for fees.
     function setAdminFeeRecipient(address _recipient) external {
         require(msg.sender == governance, "!governance");
+        require(_recipient != address(0), "zero address");
         adminFeeRecipient = _recipient;
         emit AdminFeeRecipientSet(_recipient);
     }
@@ -262,22 +263,23 @@ contract StrategyProxy {
     /// @dev Admin fees become available every Thursday at 00:00 UTC
     function claimAdminFees() external returns (uint) {
         require(msg.sender == adminFeeRecipient, "!authorized");
-        _claimAdminFees();
-        return _transferBalance(crvUSD, adminFeeRecipient);
+        return _claimAdminFees(adminFeeRecipient);
     }
 
     /// @notice Allow governance to claim weekly admin fees from Curve fee distributor.
-    function forceClaimAdminFees(address _recipient) external returns (uint) {
+    function claimAdminFeesTo(address _recipient) external returns (uint) {
         require(msg.sender == governance, "!governance");
-        _claimAdminFees();
-        return _transferBalance(crvUSD, _recipient);
+        return _claimAdminFees(_recipient);
     }
 
-    function _claimAdminFees() internal {
-        if (canClaim()) {
-            address p = address(proxy);
-            feeDistribution.claim_many([p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p, p]);
-        }
+    function _claimAdminFees(address _recipient) internal returns (uint) {
+        if (!canClaim()) return 0;
+        address p = address(proxy);
+        uint startBalance = crvUSD.balanceOf(p);
+        
+        feeDistribution.claim(p);
+        while (crvUSD.balanceOf(p) <= startBalance) feeDistribution.claim(p);
+        return _transferBalance(crvUSD, _recipient);
     }
 
     /// @notice Cast a DAO vote

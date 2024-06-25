@@ -122,7 +122,7 @@ def test_admin_fees(accounts, crvusd, fee_distributor, whale_crvusd, voter, new_
 
     # Force Claim Admin Fees
     assert crvusd.balanceOf(dev) == 0
-    tx = new_proxy.forceClaimAdminFees(dev, {'from':gov})
+    tx = new_proxy.claimAdminFeesTo(dev, {'from':gov})
     assert crvusd.balanceOf(dev) == tx.return_value
 
 
