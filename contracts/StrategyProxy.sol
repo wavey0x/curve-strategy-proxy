@@ -91,6 +91,7 @@ contract StrategyProxy {
      * @notice Approve curve vault factory addresses.
      * @dev Must be called by governance. Multiple factories possible (Curve LP, Curve Lend).
      * @param _factory Address to set as a curve vault factory.
+     * @param _allowed Whether the address is allowed factory permissions (to approve strategies).
      */
     function approveFactory(address _factory, bool _allowed) external {
         require(msg.sender == governance, "!governance");
@@ -112,8 +113,7 @@ contract StrategyProxy {
 
     /**
      * @notice Set recipient of weekly crvUSD admin fees.
-     * @dev Only a single address can be approved at any time.
-     *   Must be called by governance.
+     * @dev Only a single address can be approved at any time. Must be called by governance.
      * @param _recipient Address to approve for fees.
      */
     function setAdminFeeRecipient(address _recipient) external {
@@ -169,6 +169,7 @@ contract StrategyProxy {
      * @notice Approve an address for voting on gauge weights.
      * @dev Must be called by governance.
      * @param _voter Voter to add.
+     * @param _allowed Whether the address is allowed to vote.
      */
     function approveVoter(address _voter, bool _approved) external {
         require(msg.sender == governance, "!governance");
@@ -180,6 +181,7 @@ contract StrategyProxy {
      * @notice Approve an address for locking CRV.
      * @dev Must be called by governance.
      * @param _locker Locker to add.
+     * @param _allowed Whether the address is allowed to lock.
      */
     function approveLocker(address _locker, bool _approved) external {
         require(msg.sender == governance, "!governance");
@@ -368,6 +370,7 @@ contract StrategyProxy {
     /**
      * @notice Claim share of weekly admin fees from Curve fee distributor.
      * @dev Admin fees become available every Thursday at 00:00 UTC
+     * @return Amount of crvUSD claimed.
      */
     function claimAdminFees() external returns (uint) {
         require(msg.sender == adminFeeRecipient, "!authorized");
@@ -376,6 +379,8 @@ contract StrategyProxy {
 
     /**
      * @notice Allow governance to claim weekly admin fees from Curve fee distributor.
+     * @param _recipient Where to send the crvUSD.
+     * @return Amount of crvUSD claimed.
      */
     function claimAdminFeesTo(address _recipient) external returns (uint) {
         require(msg.sender == governance, "!governance");
@@ -424,6 +429,7 @@ contract StrategyProxy {
 
     /**
      * @notice Check if any admin fees are available for claim.
+     * @return Whether admin fees are claimable.
      */
     function canClaim() public view returns (bool) {
         uint weekStart = (block.timestamp / WEEK) * WEEK;
@@ -491,8 +497,9 @@ contract StrategyProxy {
 
     /**
      * @notice Approve reward tokens to be claimed by strategies.
-     * @dev Must be called by governance.
+     * @dev Must be called by governance. Only required for legacy gauges without rewards_receiver interface.
      * @param _token The token to be claimed.
+     * @param _approved Whether a reward token is approved to be claimed.
      */
     function approveRewardToken(address _token, bool _approved) external {
         require(msg.sender == governance, "!governance");
