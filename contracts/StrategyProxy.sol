@@ -91,12 +91,12 @@ contract StrategyProxy {
      * @notice Approve curve vault factory addresses.
      * @dev Must be called by governance. Multiple factories possible (Curve LP, Curve Lend).
      * @param _factory Address to set as a curve vault factory.
-     * @param _allowed Whether the address is allowed factory permissions (to approve strategies).
+     * @param _approved Whether the address is allowed factory permissions (to approve strategies).
      */
-    function approveFactory(address _factory, bool _allowed) external {
+    function approveFactory(address _factory, bool _approved) external {
         require(msg.sender == governance, "!governance");
-        approvedFactories[_factory] = _allowed;
-        emit FactoryApproved(_factory, _allowed);
+        approvedFactories[_factory] = _approved;
+        emit FactoryApproved(_factory, _approved);
     }
 
     /**
@@ -169,7 +169,7 @@ contract StrategyProxy {
      * @notice Approve an address for voting on gauge weights.
      * @dev Must be called by governance.
      * @param _voter Voter to add.
-     * @param _allowed Whether the address is allowed to vote.
+     * @param _approved Whether the address is allowed to vote.
      */
     function approveVoter(address _voter, bool _approved) external {
         require(msg.sender == governance, "!governance");
@@ -181,7 +181,7 @@ contract StrategyProxy {
      * @notice Approve an address for locking CRV.
      * @dev Must be called by governance.
      * @param _locker Locker to add.
-     * @param _allowed Whether the address is allowed to lock.
+     * @param _approved Whether the address is allowed to lock.
      */
     function approveLocker(address _locker, bool _approved) external {
         require(msg.sender == governance, "!governance");
@@ -388,14 +388,16 @@ contract StrategyProxy {
     }
 
     function _claimAdminFees(address _recipient) internal returns (uint) {
-        if (!canClaim()) return 0;
         address p = address(proxy);
-        uint startBalance = crvUSD.balanceOf(p);
+        uint balance = crvUSD.balanceOf(p);
+        if (!canClaim()) {
+            return balance > 1e18 ? _transferBalance(crvUSD, _recipient) : 0;
+        }
 
         for (uint i; i < 10; i++) {
             // @dev max 10 tries is up to 500 weeks of history.
             feeDistribution.claim(p);
-            if (crvUSD.balanceOf(p) > startBalance) break;
+            if (crvUSD.balanceOf(p) > balance) break;
         }
         return _transferBalance(crvUSD, _recipient);
     }
@@ -474,6 +476,7 @@ contract StrategyProxy {
     // use this internal function to eliminate the need for transfers when claiming extra rewards
     function _claimRewards(address _gauge) internal returns (bool) {
         require(strategies[_gauge] == msg.sender, "!strategy");
+        IGauge(_gauge).claim_rewards(address(proxy));
         try IGauge(_gauge).rewards_receiver(address(proxy)) returns (
             address receiver
         ) {
@@ -481,7 +484,6 @@ contract StrategyProxy {
         } catch {
             return false;
         }
-        IGauge(_gauge).claim_rewards(address(proxy));
         return true;
     }
 
